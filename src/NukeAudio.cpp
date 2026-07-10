@@ -333,6 +333,7 @@ public:
 
 		uint64_t id = ++m_nextVoice;
 		m_voices[id] = v;
+		cout << "[NukeAudio]	voice " << id << " started (file, bus " << bus << "): " << path << endl;
 		return id;
 	}
 
@@ -340,14 +341,13 @@ public:
 	{
 		auto it = m_voices.find(voice);
 		if (it == m_voices.end()) return;
-		ma_sound_uninit(it->second.snd);
-		delete it->second.snd;
+		FreeVoice(it->second);
 		m_voices.erase(it);
 	}
 
 	void stopAll() override
 	{
-		for (auto& kv : m_voices) { ma_sound_uninit(kv.second.snd); delete kv.second.snd; }
+		for (auto& kv : m_voices) FreeVoice(kv.second);
 		m_voices.clear();
 	}
 
@@ -419,6 +419,50 @@ public:
 
 	void getAnalysis(NukeAudioAnalysis& out) override { out = m_analysis; }
 
+	// Packed content (3.2): play from MEMORY — the voice owns a copy of the bytes and a
+	// ma_decoder over them (decode-on-the-fly; no temp files, the pak stays the only copy).
+	uint64_t playData(const void* bytes, uint64_t size, const NukeVoiceDesc& d) override
+	{
+		if (!m_ok || !bytes || !size) return 0;
+		int bus = (d.bus >= 0 && d.bus < kBusCount) ? d.bus : 1;
+		Voice v;
+		v.data.assign((const char*)bytes, (size_t)size);
+		v.dec = new ma_decoder();
+		if (ma_decoder_init_memory(v.data.data(), v.data.size(), nullptr, v.dec) != MA_SUCCESS)
+		{
+			cout << "[NukeAudio]	can't decode memory clip (" << size << " bytes)" << endl;
+			delete v.dec;
+			return 0;
+		}
+		v.snd = new ma_sound();
+		if (ma_sound_init_from_data_source(&m_engine, v.dec, 0, &m_bus[bus], v.snd) != MA_SUCCESS)
+		{
+			ma_decoder_uninit(v.dec); delete v.dec; delete v.snd;
+			return 0;
+		}
+		v.bus = bus;
+		ma_sound_set_volume(v.snd, d.volume);
+		ma_sound_set_pitch(v.snd, d.pitch > 0.01f ? d.pitch : 0.01f);
+		ma_sound_set_looping(v.snd, d.loop ? MA_TRUE : MA_FALSE);
+		if (d.spatial)
+		{
+			ma_sound_set_spatialization_enabled(v.snd, MA_TRUE);
+			ma_sound_set_positioning(v.snd, ma_positioning_absolute);
+			ma_sound_set_position(v.snd, d.pos[0], d.pos[1], d.pos[2]);
+			ma_sound_set_attenuation_model(v.snd, ma_attenuation_model_linear);
+			ma_sound_set_min_distance(v.snd, d.minDist > 0.01f ? d.minDist : 0.01f);
+			ma_sound_set_max_distance(v.snd, d.maxDist > d.minDist ? d.maxDist : d.minDist + 0.1f);
+		}
+		else
+			ma_sound_set_spatialization_enabled(v.snd, MA_FALSE);
+		if (m_gamePaused && bus != 2) v.gamePaused = true;
+		else ma_sound_start(v.snd);
+		uint64_t id = ++m_nextVoice;
+		m_voices[id] = std::move(v);
+		cout << "[NukeAudio]	voice " << id << " started (memory, bus " << bus << ", " << size << " bytes)" << endl;
+		return id;
+	}
+
 private:
 	struct Voice
 	{
@@ -426,7 +470,17 @@ private:
 		int  bus = 1;
 		bool userPaused = false;   // script/inspector pause
 		bool gamePaused = false;   // global PIE/Player pause
+		// Memory playback (packed content): the voice OWNS its bytes + decoder.
+		std::string  data;
+		ma_decoder*  dec = nullptr;
 	};
+
+	void FreeVoice(Voice& v)
+	{
+		ma_sound_uninit(v.snd);
+		delete v.snd;
+		if (v.dec) { ma_decoder_uninit(v.dec); delete v.dec; v.dec = nullptr; }
+	}
 
 	Voice* Find(uint64_t id)
 	{
@@ -446,8 +500,7 @@ private:
 		{
 			if (ma_sound_at_end(it->second.snd) && !ma_sound_is_looping(it->second.snd))
 			{
-				ma_sound_uninit(it->second.snd);
-				delete it->second.snd;
+				FreeVoice(it->second);
 				it = m_voices.erase(it);
 			}
 			else ++it;
