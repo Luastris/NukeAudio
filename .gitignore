@@ -1,0 +1,26 @@
+# Build output
+build/
+[Bb]in/
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.exp
+*.lib
+*.dll
+*.tlog
+*.lastbuildstate
+
+# Vendored single-file backends (deps/miniaudio/miniaudio.h + deps/stb/stb_vorbis.c)
+# are TRACKED — release snapshots with no upstream .git, and the module must build from
+# a clean clone (both compile INTO the DLL; see src/NukeAudio.cpp). Nothing to ignore.
+
+# Visual Studio / IDE
+.vs/
+*.user
+*.suo
+
+# logs / OS
+*.log
+Thumbs.db
+.DS_Store
